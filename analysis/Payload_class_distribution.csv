@@ -1,5 +1,4 @@
-Payload,Stable,Unstable,Total
-mRNA,2014 (72.3%),772 (27.7%),2786
-siRNA,947 (77.9%),269 (22.1%),1216
-DNA barcode,1027 (73.8%),365 (26.2%),1392
-Overall,3988 (74.7%),1406 (25.3%),5394
+Payload,Formed,Not formed,Total,% Formed
+mRNA,2014,772,2786,72.3
+siRNA,947,269,1216,77.9
+Overall,2961,1041,4002,74.0
