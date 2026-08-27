@@ -1,10 +1,5 @@
 #Evaluate XGBoost model with the full classification metric panel and bootstrap 95% CIs.
 #Reports accuracy, balanced accuracy, sensitivity, specificity, F1, PR-AUC, ROC-AUC
-#per payload, with 95% CIs from 1000 test-set resamples.
-
-#Outputs (./results/):
-#  metrics_table.csv      metrics x payloads with 95% CIs
-#  confusion_{payload}.png    test-set confusion matrix
 
 import ast
 import itertools
@@ -22,8 +17,10 @@ from imblearn.over_sampling import SMOTE
 from sklearn import metrics
 from sklearn.metrics import (accuracy_score, average_precision_score,
                              balanced_accuracy_score, confusion_matrix,
-                             f1_score, roc_auc_score)
+                             f1_score, roc_auc_score, precision_recall_curve, 
+                             roc_curve)
 from sklearn.preprocessing import StandardScaler
+from sklearn.decomposition import PCA
 
 warnings.filterwarnings('ignore')
 
@@ -32,11 +29,10 @@ PARAMS_DIR  = './params'
 RESULTS_DIR = './results'
 
 PAYLOADS    = ['mRNA', 'siRNA', 'RNA']
-K           = 5                # 5-fold cross validation
 N_BOOTSTRAP = 1000             # test-set resamples for metric CIs
 SEED        = 15
 METRIC_NAMES = ['ROC_AUC', 'PR_AUC', 'Accuracy', 'Balanced_Accuracy',
-                'Sensitivity', 'Specificity', 'F1']
+                'Sensitivity', 'Specificity', 'Precision', 'F1']
 clf_VERSION = 'v1'
 
 
@@ -156,7 +152,7 @@ def trainXGB(Xtrain, ytrain, Xtest, ytest, importance_array, column_names, hyper
         df1.sort_values(by='fscore',ascending=True).plot(kind='barh', x='feature_names', y='fscore', legend=False, figsize=(6, 10))
         plt.title('XGBoost Feature Importance (Top 30)')
         plt.xlabel('Relative importance')
-        plt.gcf().savefig('feature_importance_xgb.png')
+        plt.gcf().savefig('feature_importance_xgb.svg')
         plt.show()
 
     return bst, importance_array
@@ -174,6 +170,7 @@ def classifier_train(X, y, runXGB, Xtest, ytest, pca_comp, smote, importance_arr
     if pca_comp != 0:
         pca = PCA(n_components = pca_comp)
         pca.fit(scaledX)
+        print(pca.explained_variance_ratio_ * 100)
         pca_scaledX = pca.transform(scaledX)
     else:
         pca_scaledX = scaledX
@@ -188,11 +185,11 @@ def classifier_train(X, y, runXGB, Xtest, ytest, pca_comp, smote, importance_arr
 
 def classifier_test(scaledX, y, clf, index, scaler, pca, verbose):
     pca_scaledX = scaledX
-    if pca != 0:
-        pca_scaledX = pca.transform(scaledX)
+    # if pca != 0:
+    #     pca_scaledX = pca.transform(scaledX)
     if index==1:
         pca_scaledXG = xgb.DMatrix(pca_scaledX, label=y)
-        pred_array = clf.predict(pca_scaledXG, ntree_limit=clf.best_iteration)
+        pred_array = clf.predict(pca_scaledXG)
         scores = pred_array
 
     if verbose:
@@ -239,7 +236,7 @@ def train_model(X_train, y_train, X_val, y_val, random_search_params):
 
     X_train, y_train, scaler, pca, clf, index, importance_array, column_names = classifier_train(X_train, y_train, runXGB, X_val, y_val, pca, smote, importance_array, X_train.columns, random_search_params, verbose)
     print('Feature selection using training feature importance')
-    X_val = scaler.transform(X_val)
+    X_val = scaler.transform(X_val) #pca.transform(scaler.transform(X_val))
     imp_features, X_train, X_val, column_names = feature_selection(X_train, X_val, importance_array, column_names, verbose)
     print('Repeat training on filtered training data')
     importance_array = pd.DataFrame()
@@ -249,7 +246,7 @@ def train_model(X_train, y_train, X_val, y_val, random_search_params):
 
 def test_model(X_test, y_test, clf, index, scaler, pca, imp_features, verbose):
     print('Analysing the test predictions')
-    X_test = scaler.transform(X_test)
+    X_test = scaler.transform(X_test) #pca.transform(scaler.transform(X_test))
     X_test = np.array(X_test)[:, imp_features]
     pred_array, auc, clf = classifier_test(X_test, y_test, clf, index, scaler, pca, verbose)
 
@@ -272,6 +269,7 @@ def compute_metrics(y_true, y_score, threshold=0.5):
         'Balanced_Accuracy': balanced_accuracy_score(y_true, y_pred),
         'Sensitivity':       tp / (tp + fn) if (tp + fn) else np.nan,
         'Specificity':       tn / (tn + fp) if (tn + fp) else np.nan,
+        'Precision':         tp / (tp + fp) if (tp + fp) else np.nan,
         'F1':                f1_score(y_true, y_pred, zero_division=0),
     }
 
@@ -284,32 +282,68 @@ def bootstrap_metrics(y_true, y_score, n=N_BOOTSTRAP, seed=SEED):
     point = compute_metrics(y_true, y_score)
 
     boots = {m: [] for m in METRIC_NAMES}
+    pos_idx = np.where(y_true == 1)[0]
+    neg_idx = np.where(y_true == 0)[0]
     for _ in range(n):
-        idx = rng.integers(0, N, size=N)
-        if len(np.unique(y_true[idx])) < 2:
-            continue
-        try:
-            for k, v in compute_metrics(y_true[idx], y_score[idx]).items():
-                boots[k].append(v)
-        except Exception:
-            continue
+        p = rng.choice(pos_idx, size=len(pos_idx), replace=True)
+        q = rng.choice(neg_idx, size=len(neg_idx), replace=True)
+        idx = np.concatenate([p, q])
+        for k, v in compute_metrics(y_true[idx], y_score[idx]).items():
+            boots[k].append(v)
 
     return {m: (point[m],
                 float(np.percentile(boots[m], 2.5)),
                 float(np.percentile(boots[m], 97.5))) for m in METRIC_NAMES}
 
 
-def save_confusion(y_true, y_score, payload):
+def save_confusion(y_true, y_score, train_payload, test_payload, out_dir):
     #Save a confusion matrix PNG using LNP_model's plot_confusion_matrix.
     y_true = np.asarray(y_true).astype(int)
     y_pred = (np.asarray(y_score) > 0.5).astype(int)
     cm = confusion_matrix(y_true, y_pred, labels=[0, 1])
-    plot_confusion_matrix(cm, classes=['Unstable', 'Stable'],
-                          title=f'{payload} test set')
-    plt.savefig(f'{RESULTS_DIR}/confusion_{payload}.png',
+    title = (f'{train_payload} model  |  {train_payload} test set')
+    plot_confusion_matrix(cm, classes=['Not formed', 'Formed'],
+                          title=title)
+    plt.savefig(f'{out_dir}/confusion_{train_payload}_{test_payload}.svg',
                 dpi=200, bbox_inches='tight')
     plt.close()
 
+def save_predictions(y_true, y_score, train_payload, test_payload, out_dir):
+    df = pd.DataFrame({
+        'y_true':  np.asarray(y_true).astype(int),
+        'y_score': np.asarray(y_score),
+        'y_pred':  (np.asarray(y_score) > 0.5).astype(int),
+    })
+    df.to_csv(f'{out_dir}/predictions_{train_payload}_{test_payload}.csv', index=False)
+
+
+def save_roc_pr_curves(y_true, y_score, train_payload, test_payload, out_dir):
+    fpr, tpr, roc_thr = roc_curve(y_true, y_score)
+    precision, recall, pr_thr = precision_recall_curve(y_true, y_score)
+
+    label = (f'{train_payload}'
+            if train_payload == test_payload
+            else f'train {train_payload}, test {test_payload}')
+
+
+    pd.DataFrame({'fpr': fpr, 'tpr': tpr,
+                  'threshold': np.append(roc_thr, np.nan)[:len(fpr)]
+                  }).to_csv(f'{out_dir}/roc_curve_{train_payload}_{test_payload}.csv', index=False)
+    pd.DataFrame({'precision': precision, 'recall': recall,
+                  'threshold': np.append(pr_thr, np.nan)[:len(precision)]
+                  }).to_csv(f'{out_dir}/pr_curve_{train_payload}_{test_payload}.csv', index=False)
+
+    fig, axes = plt.subplots(1, 2, figsize=(10, 4))
+    axes[0].plot(fpr, tpr, 'b')
+    axes[0].plot([0,1],[0,1],'r--')
+    axes[0].set_xlabel('FPR')
+    axes[0].set_ylabel('TPR')
+    axes[0].set_title(f'{label} ROC')
+    axes[1].plot(recall, precision, 'b')
+    axes[1].set_xlabel('Recall'); axes[1].set_ylabel('Precision'); axes[1].set_title(f'{label} PR')
+    fig.tight_layout()
+    fig.savefig(f'{out_dir}/pr_roc_{train_payload}_{test_payload}.svg', dpi=200, bbox_inches='tight')
+    plt.close(fig)
 
 def save_feature_importance(clf, all_columns, imp_features, payload, top_n=30):
     #Save XGBoost fscore for the retrained model, mapped back to original feature names.
@@ -328,20 +362,25 @@ def save_feature_importance(clf, all_columns, imp_features, payload, top_n=30):
     ax.set_xlabel('Relative importance')
     ax.set_title(f'{payload} XGBoost feature importance (top {top_n})')
     fig.tight_layout()
-    fig.savefig(f'{RESULTS_DIR}/importance_{payload}.png',
+    fig.savefig(f'{RESULTS_DIR}/importance_{payload}.svg',
                 dpi=200, bbox_inches='tight')
     plt.close(fig)
     return df
 
-def run_payload(payload):
-    print(f'\n=== {payload} ===')
+def run_payload(train_payload, test_payload=None):
+    if test_payload is None:
+        test_payload = train_payload
+    #tag = f'{train_payload}_{test_payload}'
+    out_dir = f'{RESULTS_DIR}/{train_payload}_{test_payload}'
+    os.makedirs(out_dir, exist_ok=True)
+    print(f'\n=== train={train_payload}, test={test_payload} ===')
 
-    # Same data loading as LNP_model.main
-    data_train = pd.read_csv(f'{DATA_DIR}/{payload}_train.csv')
-    data_test  = pd.read_csv(f'{DATA_DIR}/{payload}_test.csv')
+    # Train data from train_payload, test data from test_payload
+    data_train = pd.read_csv(f'{DATA_DIR}/{train_payload}_train.csv')
+    data_test  = pd.read_csv(f'{DATA_DIR}/{test_payload}_test.csv')
 
-    data_train = data_train.drop(['Payload'],1)
-    data_test = data_test.drop(['Payload'],1)
+    data_train = data_train.drop(columns=['Payload'])
+    data_test = data_test.drop(columns=['Payload'])
 
     y_train = np.array(data_train['label'])
     X_train = data_train.drop(columns=['label', 'Lipomer', 'Cholesterol',
@@ -353,28 +392,29 @@ def run_payload(payload):
                                       'diameter'])
 
     # Load saved hyperparameters
-    with open(f'{PARAMS_DIR}/hyperparameters{payload}.pkl', 'rb') as f:
+    with open(f'{PARAMS_DIR}/hyperparameters{train_payload}.pkl', 'rb') as f:
         hyperparams = pickle.load(f)
     hyperparams['tree_method'] = 'exact'
-    hyperparams['base_score'] = 0.5
-    hyperparams['nthread'] = 6
+    #hyperparams['base_score'] = 0.5
 
-    # Train (verbatim LNP_model.train_model pipeline)
     clf, index, scaler, pca, imp_features, verbose = train_model(
         X_train, y_train, X_test, y_test, hyperparams)
 
-    # Score the saved test set to get continuous prediction scores
     X_test_scaled = np.array(scaler.transform(X_test))[:, imp_features]
     y_score, _, _ = classifier_test(X_test_scaled, y_test, clf, index,
                                     scaler, pca, verbose=False)
 
     # Full metric panel with bootstrap CIs
     metrics_ci = bootstrap_metrics(y_test, y_score)
-    save_confusion(y_test, y_score, payload)
-    save_feature_importance(clf, X_train.columns, imp_features, payload)
+    save_confusion(y_test, y_score, train_payload, test_payload, out_dir)
+    save_predictions(y_test, y_score, train_payload, test_payload, out_dir)
+    save_roc_pr_curves(y_test, y_score, train_payload, test_payload, out_dir)
 
-    return [{'payload': payload, 'metric': m,
-             'point': v[0], 'low95': v[1], 'high95': v[2]}
+    if train_payload == test_payload:
+        save_feature_importance(clf, X_train.columns, imp_features, train_payload)
+
+    return [{'train_payload': train_payload, 'test_payload': test_payload,
+             'metric': m, 'point': v[0], 'low95': v[1], 'high95': v[2]}
             for m, v in metrics_ci.items()]
 
 
@@ -384,18 +424,22 @@ def main():
     np.random.seed(SEED)
 
     rows = []
-    for payload in PAYLOADS:
-        rows.extend(run_payload(payload))
+    for train_p in PAYLOADS:
+        for test_p in PAYLOADS:
+            rows.extend(run_payload(train_p, test_p))
 
     metrics_long = pd.DataFrame(rows)
-    metrics_wide = metrics_long.pivot(index='metric', columns='payload',
-                                      values=['point', 'low95', 'high95'])
-    metrics_wide = metrics_wide.reorder_levels([1, 0], axis=1).sort_index(axis=1)
-
     metrics_long.to_csv(f'{RESULTS_DIR}/metrics_long.csv', index=False)
-    metrics_wide.to_csv(f'{RESULTS_DIR}/metrics_table.csv')
-    print('\nFinal metric panel:')
-    print(metrics_wide.round(3))
+
+    print('\n=== Final metric panels ===')
+    for m in METRIC_NAMES:
+        sub = metrics_long[metrics_long['metric'] == m]
+        wide = sub.pivot(index='test_payload', columns='train_payload',
+                         values=['point', 'low95', 'high95'])
+        wide = wide.reorder_levels([1, 0], axis=1).sort_index(axis=1)
+        wide.to_csv(f'{RESULTS_DIR}/metrics_{m}.csv')
+        print(f'\n{m}:')
+        print(wide.round(3))
 
 
 if __name__ == '__main__':

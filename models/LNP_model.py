@@ -173,7 +173,7 @@ def classifier_test(scaledX, y, clf, index, scaler, pca, verbose):
         pca_scaledX = pca.transform(scaledX)
     if index==1:# XGB
         pca_scaledXG = xgb.DMatrix(pca_scaledX, label=y)
-        pred_array = clf.predict(pca_scaledXG, ntree_limit=clf.best_iteration)
+        pred_array = clf.predict(pca_scaledXG)
         scores = pred_array
 
     if verbose:
@@ -255,7 +255,7 @@ def pandas_classifier(df, runXGB, K, importance_array, hyperparameters, verbose 
     print('Training the classifier on complete train dataset to get IMP features')
     Xtrain_full, ytrain_full, scaler, pca, clf, index, importance_array, column_names = classifier_train(df.iloc[:, 0:-1], df.iloc[:, -1],
                                                runXGB, df.iloc[:, 0:-1], df.iloc[:, -1], 0, 1, importance_array, df.iloc[:, 0:-1].columns, hyperparameters, verbose)
-    return importance_array, sum(np.array(auc_fold))/int(K), sum(np.array(auc_fold))/int(K)
+    return importance_array, sum(np.array(auc_fold))/int(K), sum(np.array(acc_fold))/int(K)
 
 
 def train_model(X_train, y_train, X_val, y_val, random_search_params):
