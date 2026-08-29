@@ -46,9 +46,9 @@ def main():
         
     #Separate X and y
     y_train = np.array(data_train['label'])
-    X_train = data_train.drop(['label','Lipomer', 'Cholesterol', 'HelperLipid', 'PEGChain', 'PEG MW', 'diameter'], 1)
+    X_train = data_train.drop(columns = ['label','Lipomer', 'Cholesterol', 'HelperLipid', 'PEGChain', 'PEG MW', 'diameter'])
     y_test = np.array(data_test['label'])
-    X_test = data_test.drop(['label','Lipomer', 'Cholesterol', 'HelperLipid', 'PEGChain', 'PEG MW', 'diameter'], 1)
+    X_test = data_test.drop(columns = ['label','Lipomer', 'Cholesterol', 'HelperLipid', 'PEGChain', 'PEG MW', 'diameter'])
 
     #Hyperparameter Tuning - Random Search
 

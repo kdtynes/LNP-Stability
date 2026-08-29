@@ -17,7 +17,7 @@ def data_preprocessing(data):
     data.fillna(0, inplace=True)
 
     # Renaming columns
-    data = data.rename(columns={'Included in screen? ': 'classifier'})
+    data = data.rename(columns={'Included in screen?': 'classifier'})
     data = data.rename(columns={'Helper Lipid': 'HelperLipid'})
     data = data.rename(columns={'Diameter (nm)': 'diameter'})
 
@@ -28,14 +28,13 @@ def data_preprocessing(data):
                      errors='ignore')
 
     # Strip whitespace
-    data['PEGChain']   = data['PEGChain'].str.strip()
+    data['PEG']   = data['PEG'].str.strip()
     data['Payload']    = data['Payload'].str.strip()
     data['classifier'] = data['classifier'].str.strip()
 
     # Convert to binary classification {0, 1}
-    data.loc[data.classifier == 'Y', 'classifier'] = 1
-    data.loc[data.classifier == 'N', 'classifier'] = 0
-    data = data[data.classifier.isnull() == False]
+    data['classifier'] = data['classifier'].map({'Y': 1, 'N': 0})
+    data = data[data.classifier.isnull() == False].reset_index(drop=True)
 
     # In the HelperLipid column '-' are equivalent to 'None' (Helper Lipid Mole % = 0)
     data.loc[data.HelperLipid == '-',    'HelperLipid'] = 'None'
@@ -48,7 +47,7 @@ def data_preprocessing(data):
     data.loc[data['Payload'].str.contains('aVHH'), 'Payload'] = "0"  # aVHH treated as mRNA
     data.loc[data['Payload'].str.contains('si'),   'Payload'] = "1"  # siRNA
     data.loc[data['Payload'].str.contains('BC'),   'Payload'] = "2"  # DNA barcode
-    data['Payload'] = pd.to_numeric(data['Payload'], errors='ignore')
+    data['Payload'] = pd.to_numeric(data['Payload'], errors='coerce')
 
     # Separate data and labels
     y = np.array(data['classifier'])
@@ -65,8 +64,6 @@ def data_preprocessing(data):
 
 def add_smiles(data, smiles):
     cols_to_smiles = ['Lipomer', 'Cholesterol', 'HelperLipid', 'PEG']
-    # Build the PEG identifier as PEGChain + 'PEG' + PEG MW (e.g. "CPEG2000")
-    data['PEG'] = data['PEGChain'] + 'PEG' + data['PEG MW'].astype(str)
     for col in cols_to_smiles:
         data = data.join(smiles.set_index('Name'), on=col)
         new_name = col + ' SMILES'
@@ -110,18 +107,16 @@ def add_mordred(data, mordred_df):
 
 
 def remove_mordred_errors(data):
-    """Coerce object-typed Mordred columns to numeric; drop columns that become all-zero."""
-    types, type_idx = np.unique(data.dtypes, return_inverse=True)
-    obj_idx = np.argwhere(type_idx == np.where(types == object)[0][0])
-    # Skip the first 12 columns (label + bulk-property columns, kept as-is)
-    obj_idx = [i[0] for i in obj_idx if i[0] > 11]
-
+    #Coerce object-typed Mordred columns to numeric; drop columns that become all-zero.
+    # Select object columns, excluding the first 12 non-mordred columns
+    obj_cols = data.iloc[:, 12:].select_dtypes(include='object').columns
+    
     cols_to_remove = []
-    for i in obj_idx:
-        col = data.columns[i]
+    for col in obj_cols:
         data[col] = pd.to_numeric(data[col], errors='coerce').fillna(0)
         if (data[col] == 0).all():
             cols_to_remove.append(col)
+    
     print(f"num cols removed: {len(cols_to_remove)}")
     data = data.drop(columns=cols_to_remove)
     data.replace([np.inf, -np.inf], np.nan, inplace=True)
@@ -166,8 +161,8 @@ def main():
     smiles = smiles.drop_duplicates('Name')
     data = add_smiles(data, smiles)
 
-    # Append SAPT0 interaction energies (stretched conformations -> AP-Net)
-    with open(f'{DATA_DIR}/dimer_interactions_stretch.pkl', 'rb') as f:
+    # Append SAPT0 interaction energies (min energy conformations -> AP-Net)
+    with open(f'{DATA_DIR}/dimer_interactions_minenergy.pkl', 'rb') as f:
         interactions = pickle.load(f)
     data = add_interactions(data, interactions)
 
